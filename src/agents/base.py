@@ -35,7 +35,13 @@ class LLMAgent(ABC):
             return "https://openrouter.ai/api/v1/chat/completions"
         elif self.provider == "deepseek":
             return "https://api.deepseek.com/v1/chat/completions"
-        return self.base_url or "https://api.openai.com/v1/chat/completions"
+        # Custom OpenAI-compatible provider (opencode, etc.)
+        if self.base_url:
+            url = self.base_url.rstrip("/")
+            if not url.endswith("/chat/completions"):
+                url += "/chat/completions"
+            return url
+        return "https://api.openai.com/v1/chat/completions"
 
     def _get_headers(self) -> dict:
         if self.provider == "openrouter":
@@ -83,7 +89,18 @@ class LLMAgent(ABC):
 
         if self.provider == "anthropic":
             return data["content"][0]["text"]
-        return data["choices"][0]["message"]["content"]
+
+        # Standard OpenAI-compatible response
+        choice = data["choices"][0]
+        message = choice.get("message", {})
+        content = message.get("content", "")
+
+        # Handle reasoning models (deepseek-v4-pro, etc.) where content may be empty
+        # and the real answer is in reasoning_content
+        if not content and message.get("reasoning_content"):
+            content = message["reasoning_content"]
+
+        return content
 
     def call_sync(self, user_message: str) -> str:
         """Synchronous wrapper for _call_llm."""

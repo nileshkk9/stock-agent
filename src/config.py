@@ -20,7 +20,7 @@ class LLMConfig(BaseModel):
     api_key: str = Field(default_factory=lambda: os.getenv("LLM_API_KEY", ""))
     base_url: str | None = Field(default_factory=lambda: os.getenv("LLM_BASE_URL"))
     temperature: float = 0.3
-    max_tokens: int = 2048
+    max_tokens: int = 4096
 
 
 class KiteConfig(BaseModel):
