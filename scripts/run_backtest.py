@@ -1,7 +1,19 @@
 #!/usr/bin/env python3
-"""Run 5-year backtest with signal-based strategies vs Nifty 50 benchmark."""
+"""
+Stock Agent — 5-Year Backtest: Nifty 50
+
+Strategies tested:
+    1. Momentum Ranking 🆕 — top 10 stocks by 6mo+3mo momentum, monthly rotation
+    2. Trend + Momentum — SMA50/200 + ROC filter
+    3. MA Crossover — Golden/Death Cross
+    4. RSI Mean Reversion — oversold/overbought
+    5. Buy & Hold — equal-weight, never sell (benchmark)
+
+Output: head-to-head comparison vs Nifty 50 index
+"""
 
 import sys
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -9,188 +21,225 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import pandas as pd
 import yfinance as yf
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
-from rich.progress import Progress
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
 
-from src.config import config, load_universe
+from src.config import config
 from src.data.nse_fetcher import NSEFetcher
 from src.backtest.engine import BacktestEngine
 
 console = Console()
 
 
-def fetch_nifty50_benchmark() -> float:
-    """Get Nifty 50 total return over 5 years."""
+def fetch_nifty_return() -> float:
     try:
         nifty = yf.Ticker("^NSEI")
         df = nifty.history(period="5y")
-        if not df.empty:
-            start = df["Close"].iloc[0]
-            end = df["Close"].iloc[-1]
-            return ((end - start) / start) * 100
+        if not df.empty and len(df) > 100:
+            return ((df["Close"].iloc[-1] - df["Close"].iloc[0]) / df["Close"].iloc[0]) * 100
     except Exception:
         pass
     return 0.0
 
 
-def main():
-    console.print("[bold]Stock Agent — 5-Year Backtest (Nifty 50)[/bold]\n")
-
-    risk_cfg = config.risk_profile_config
-    profile = config.analysis.risk_profile
-    console.print(f"Risk Profile: [cyan]{profile}[/cyan]")
-    console.print(f"Max Position: [cyan]{risk_cfg.max_position_pct}%[/cyan]")
-    console.print(f"Stop Loss: [cyan]{risk_cfg.stop_loss_pct}%[/cyan]")
-    console.print(f"Initial Capital: [cyan]₹{config.paper_trading.initial_capital:,.0f}[/cyan]\n")
-
-    # Load all 50 Nifty stocks
-    universe = load_universe()
-    tickers = universe.get("nifty50", [])
-    console.print(f"Universe: [cyan]{len(tickers)} stocks[/cyan]\n")
-
-    # Fetch Nifty 50 benchmark return
-    console.print("Fetching Nifty 50 benchmark...", end=" ")
-    benchmark_return = fetch_nifty50_benchmark()
-    console.print(f"[green]{benchmark_return:+.1f}%[/green]\n")
-
-    # Fetch data for all stocks
-    fetcher = NSEFetcher()
-    price_data = {}
-    failed = []
-
-    with Progress() as progress:
-        task = progress.add_task("[cyan]Fetching 5 years of data...", total=len(tickers))
-        for ticker in tickers:
-            df = fetcher.get_historical(ticker, period="5y")
-            if not df.empty and len(df) >= 200:
-                price_data[ticker] = df
-            else:
-                failed.append(ticker)
-            progress.advance(task)
-
-    console.print(f"\nFetched: [green]{len(price_data)} stocks[/green]", end="")
-    if failed:
-        console.print(f" | Failed: [red]{len(failed)} ({', '.join(failed[:5])}...)[/red]")
-    else:
-        console.print()
-
-    if len(price_data) < 5:
-        console.print("[red]Need at least 5 stocks with data[/red]")
-        return
-
-    # Strategy 1: MA Crossover (Golden Cross / Death Cross)
-    console.print("\n[bold]Strategy 1: MA Crossover (50/200-day)[/bold]")
-    signals_ma = {}
+def generate_ma_signals(price_data: dict) -> dict:
+    signals = {}
     for ticker, df in price_data.items():
         df = df.copy()
         df["sma50"] = df["Close"].rolling(50).mean()
         df["sma200"] = df["Close"].rolling(200).mean()
-
         for idx in range(200, len(df)):
-            date_str = (
-                df.index[idx].strftime("%Y-%m-%d")
-                if hasattr(df.index[idx], "strftime")
-                else str(df.index[idx])[:10]
-            )
-            if date_str not in signals_ma:
-                signals_ma[date_str] = {}
+            dt = str(df.index[idx])[:10]
+            signals.setdefault(dt, {})
+            s50, s200 = df["sma50"].iloc[idx], df["sma200"].iloc[idx]
+            p50, p200 = df["sma50"].iloc[idx - 1], df["sma200"].iloc[idx - 1]
+            if s50 > s200 and p50 <= p200:
+                signals[dt][ticker] = {"action": "BUY", "confidence": 70}
+            elif s50 < s200 and p50 >= p200:
+                signals[dt][ticker] = {"action": "SELL", "confidence": 70}
+    return signals
 
-            sma50 = df["sma50"].iloc[idx]
-            sma200 = df["sma200"].iloc[idx]
-            prev_sma50 = df["sma50"].iloc[idx - 1]
-            prev_sma200 = df["sma200"].iloc[idx - 1]
 
-            # Golden cross: BUY
-            if sma50 > sma200 and prev_sma50 <= prev_sma200:
-                signals_ma[date_str][ticker] = {"action": "BUY", "confidence": 70}
-            # Death cross: SELL
-            elif sma50 < sma200 and prev_sma50 >= prev_sma200:
-                signals_ma[date_str][ticker] = {"action": "SELL", "confidence": 70}
-
-    console.print(f"Generated signals for [cyan]{len(signals_ma)}[/cyan] trading days")
-
-    engine = BacktestEngine(initial_cash=config.paper_trading.initial_capital)
-    results_ma = engine.run(
-        price_data=price_data,
-        signals=signals_ma,
-        max_position_pct=risk_cfg.max_position_pct,
-        stop_loss_pct=risk_cfg.stop_loss_pct,
-    )
-
-    # Strategy 2: RSI Mean Reversion (buy oversold, sell overbought)
-    console.print("\n[bold]Strategy 2: RSI Mean Reversion (30/70)[/bold]")
-    signals_rsi = {}
+def generate_rsi_signals(price_data: dict) -> dict:
+    signals = {}
     for ticker, df in price_data.items():
         df = df.copy()
-        # Compute RSI
         delta = df["Close"].diff()
-        gain = delta.where(delta > 0, 0)
-        loss = (-delta).where(delta < 0, 0)
-        avg_gain = gain.rolling(14).mean()
-        avg_loss = loss.rolling(14).mean()
-        rs = avg_gain / avg_loss
+        gain = delta.where(delta > 0, 0.0)
+        loss = (-delta).where(delta < 0, 0.0)
+        rs = gain.rolling(14).mean() / loss.rolling(14).mean().replace(0, float("nan"))
         df["rsi"] = 100 - (100 / (1 + rs))
-
         for idx in range(50, len(df)):
-            date_str = (
-                df.index[idx].strftime("%Y-%m-%d")
-                if hasattr(df.index[idx], "strftime")
-                else str(df.index[idx])[:10]
-            )
-            if date_str not in signals_rsi:
-                signals_rsi[date_str] = {}
+            dt = str(df.index[idx])[:10]
+            signals.setdefault(dt, {})
+            rsi, prsi = df["rsi"].iloc[idx], df["rsi"].iloc[idx - 1]
+            if pd.isna(rsi) or pd.isna(prsi):
+                continue
+            if rsi > 30 and prsi <= 30:
+                signals[dt][ticker] = {"action": "BUY", "confidence": 65}
+            elif rsi < 70 and prsi >= 70:
+                signals[dt][ticker] = {"action": "SELL", "confidence": 65}
+    return signals
 
-            rsi = df["rsi"].iloc[idx]
-            prev_rsi = df["rsi"].iloc[idx - 1]
 
-            # RSI crosses above 30 from below = BUY (oversold recovery)
-            if rsi > 30 and prev_rsi <= 30:
-                signals_rsi[date_str][ticker] = {"action": "BUY", "confidence": 65}
-            # RSI crosses below 70 from above = SELL (overbought)
-            elif rsi < 70 and prev_rsi >= 70:
-                signals_rsi[date_str][ticker] = {"action": "SELL", "confidence": 65}
+def main():
+    console.print(Panel.fit(
+        "[bold cyan]📊 5-Year Nifty 50 Backtest[/bold cyan]\n[dim]5 strategies × 50 stocks[/dim]",
+        border_style="cyan",
+    ))
 
-    console.print(f"Generated signals for [cyan]{len(signals_rsi)}[/cyan] trading days")
+    risk = config.risk_profile_config
+    console.print(f"Risk: [yellow]{config.analysis.risk_profile}[/yellow] | "
+                  f"Stop Loss: {risk.stop_loss_pct}% | "
+                  f"Capital: ₹{config.paper_trading.initial_capital:,.0f}\n")
 
-    results_rsi = engine.run(
-        price_data=price_data,
-        signals=signals_rsi,
-        max_position_pct=risk_cfg.max_position_pct,
-        stop_loss_pct=risk_cfg.stop_loss_pct,
-    )
+    # ═══ FETCH DATA ═══
+    tickers = NSEFetcher.get_nifty50_symbols()
+    fetcher = NSEFetcher()
+    price_data = {}
 
-    # Display comparison
-    console.print("\n")
-    table = Table(title="📊 5-Year Backtest Results — All 50 Nifty Stocks")
-    table.add_column("Metric", style="cyan")
-    table.add_column("MA Crossover", justify="right")
-    table.add_column("RSI (30/70)", justify="right")
-    table.add_column("Nifty 50", justify="right")
+    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
+                  BarColumn(), TextColumn("{task.percentage:>3.0f}%"), console=console) as prog:
+        task = prog.add_task("Downloading 5yr data...", total=len(tickers))
+        for t in tickers:
+            prog.update(task, description=f"[dim]{t}[/dim]")
+            df = fetcher.get_historical(t, period="5y")
+            if not df.empty and len(df) >= 200:
+                price_data[t] = df
+            prog.advance(task)
 
-    entries = [
-        ("Total Return", f"{results_ma['total_return_pct']:+.1f}%", f"{results_rsi['total_return_pct']:+.1f}%", f"{benchmark_return:+.1f}%"),
-        ("CAGR", f"{results_ma['cagr_pct']:+.1f}%", f"{results_rsi['cagr_pct']:+.1f}%", "—"),
-        ("Sharpe Ratio", f"{results_ma['sharpe_ratio']:.2f}", f"{results_rsi['sharpe_ratio']:.2f}", "—"),
-        ("Max Drawdown", f"-{results_ma['max_drawdown_pct']:.1f}%", f"-{results_rsi['max_drawdown_pct']:.1f}%", "—"),
-        ("Win Rate", f"{results_ma['win_rate_pct']:.0f}%", f"{results_rsi['win_rate_pct']:.0f}%", "—"),
-        ("Total Trades", str(results_ma["total_trades"]), str(results_rsi["total_trades"]), "—"),
-        ("Final Value", f"₹{results_ma['final_value']:,.0f}", f"₹{results_rsi['final_value']:,.0f}", "—"),
+    console.print(f"\n✅ {len(price_data)}/{len(tickers)} stocks downloaded\n")
+
+    nifty_ret = fetch_nifty_return()
+    console.print(f"[bold]Nifty 50 Index (5yr):[/bold] [blue]{nifty_ret:+.1f}%[/blue]\n")
+
+    engine = BacktestEngine(initial_cash=config.paper_trading.initial_capital)
+    results = {}
+
+    # ── Strategy 1: Momentum Ranking 🆕 ──
+    console.print("[bold cyan]1. Momentum Ranking[/bold cyan] (top 10, monthly rotation)")
+    r1 = engine.run(price_data, strategy="momentum_ranking", top_n=10,
+                    max_position_pct=10, stop_loss_pct=risk.stop_loss_pct)
+    results["Momentum Rank"] = r1
+    console.print(f"   {'🟢' if r1['total_return_pct']>0 else '🔴'} "
+                  f"Return: {r1['total_return_pct']:+.1f}% | CAGR: {r1['cagr_pct']:+.1f}% | "
+                  f"Sharpe: {r1['sharpe_ratio']:.2f} | DD: {r1['max_drawdown_pct']:.1f}% | "
+                  f"Trades: {r1['total_trades']} | Win: {r1['win_rate_pct']:.0f}%\n")
+
+    # ── Strategy 2: Trend + Momentum ──
+    console.print("[bold cyan]2. Trend + Momentum[/bold cyan] (SMA50/200 + ROC)")
+    r2 = engine.run(price_data, strategy="trend_momentum",
+                    max_position_pct=risk.max_position_pct, stop_loss_pct=risk.stop_loss_pct)
+    results["Trend+Momentum"] = r2
+    console.print(f"   {'🟢' if r2['total_return_pct']>0 else '🔴'} "
+                  f"Return: {r2['total_return_pct']:+.1f}% | CAGR: {r2['cagr_pct']:+.1f}% | "
+                  f"Sharpe: {r2['sharpe_ratio']:.2f} | DD: {r2['max_drawdown_pct']:.1f}% | "
+                  f"Trades: {r2['total_trades']} | Win: {r2['win_rate_pct']:.0f}%\n")
+
+    # ── Strategy 3: MA Crossover ──
+    console.print("[bold cyan]3. MA Crossover[/bold cyan] (50/200 Golden Cross)")
+    sig_ma = generate_ma_signals(price_data)
+    r3 = engine.run(price_data, signals=sig_ma, strategy="signal",
+                    max_position_pct=risk.max_position_pct, stop_loss_pct=risk.stop_loss_pct)
+    results["MA Crossover"] = r3
+    console.print(f"   {'🟢' if r3['total_return_pct']>0 else '🔴'} "
+                  f"Return: {r3['total_return_pct']:+.1f}% | CAGR: {r3['cagr_pct']:+.1f}% | "
+                  f"Sharpe: {r3['sharpe_ratio']:.2f} | DD: {r3['max_drawdown_pct']:.1f}% | "
+                  f"Trades: {r3['total_trades']} | Win: {r3['win_rate_pct']:.0f}%\n")
+
+    # ── Strategy 4: RSI ──
+    console.print("[bold cyan]4. RSI Mean Reversion[/bold cyan] (30/70)")
+    sig_rsi = generate_rsi_signals(price_data)
+    r4 = engine.run(price_data, signals=sig_rsi, strategy="signal",
+                    max_position_pct=risk.max_position_pct, stop_loss_pct=risk.stop_loss_pct)
+    results["RSI (30/70)"] = r4
+    console.print(f"   {'🟢' if r4['total_return_pct']>0 else '🔴'} "
+                  f"Return: {r4['total_return_pct']:+.1f}% | CAGR: {r4['cagr_pct']:+.1f}% | "
+                  f"Sharpe: {r4['sharpe_ratio']:.2f} | DD: {r4['max_drawdown_pct']:.1f}% | "
+                  f"Trades: {r4['total_trades']} | Win: {r4['win_rate_pct']:.0f}%\n")
+
+    # ── Strategy 5: Buy & Hold ──
+    console.print("[bold cyan]5. Buy & Hold[/bold cyan] (equal-weight, never sell)")
+    r5 = engine.run(price_data, strategy="buy_hold",
+                    max_position_pct=100/len(price_data), stop_loss_pct=99)
+    results["Buy & Hold"] = r5
+    console.print(f"   {'🟢' if r5['total_return_pct']>0 else '🔴'} "
+                  f"Return: {r5['total_return_pct']:+.1f}% | CAGR: {r5['cagr_pct']:+.1f}% | "
+                  f"Sharpe: {r5['sharpe_ratio']:.2f} | DD: {r5['max_drawdown_pct']:.1f}%\n")
+
+    # ═══ COMPARISON TABLE ═══
+    console.print()
+    table = Table(title="🏆 5-Year Backtest — Nifty 50 Comparison",
+                  caption=f"Risk: {config.analysis.risk_profile} | "
+                          f"{len(price_data)} stocks | {datetime.now().strftime('%d %b %Y')}")
+
+    table.add_column("Metric", style="cyan", width=15)
+    table.add_column("Momentum\nRank 🆕", justify="right", style="bold yellow", width=11)
+    table.add_column("Trend+\nMomentum", justify="right", width=11)
+    table.add_column("MA\nCross", justify="right", width=11)
+    table.add_column("RSI\n30/70", justify="right", width=11)
+    table.add_column("Buy &\nHold", justify="right", width=11)
+    table.add_column("Nifty\n50", justify="right", style="blue", width=11)
+
+    metrics = [
+        ("Return", "total_return_pct", "%"),
+        ("CAGR", "cagr_pct", "%"),
+        ("Sharpe", "sharpe_ratio", ""),
+        ("Max DD", "max_drawdown_pct", "%"),
+        ("Win Rate", "win_rate_pct", "%"),
+        ("Trades", "total_trades", ""),
+        ("Profit Factor", "profit_factor", ""),
+        ("Avg Win", "avg_win", "₹"),
+        ("Avg Loss", "avg_loss", "₹"),
+        ("Final Value", "final_value", "₹"),
+        ("Alpha", "alpha_pct", "%"),
     ]
 
-    for name, ma, rsi, nifty in entries:
-        table.add_row(name, ma, rsi, nifty)
+    for name, key, fmt in metrics:
+        def f(r, ftype):
+            v = r[key]
+            if ftype == "₹":
+                return f"₹{v:,.0f}"
+            if ftype == "%":
+                return f"{v:+.1f}%"
+            return f"{v:.2f}" if isinstance(v, float) else str(v)
+
+        table.add_row(
+            name,
+            f(results["Momentum Rank"], fmt),
+            f(results["Trend+Momentum"], fmt),
+            f(results["MA Crossover"], fmt),
+            f(results["RSI (30/70)"], fmt),
+            f(results["Buy & Hold"], fmt),
+            f"{nifty_ret:+.1f}%" if key == "total_return_pct" and fmt == "%" else "—",
+        )
 
     console.print(table)
 
-    # Alpha comparison
-    alpha_ma = results_ma["total_return_pct"] - benchmark_return
-    alpha_rsi = results_rsi["total_return_pct"] - benchmark_return
+    # ═══ WINNER ═══
+    ranked = sorted(results.items(), key=lambda x: x[1]["cagr_pct"] or x[1]["total_return_pct"], reverse=True)
+    winner = ranked[0]
+    w = winner[1]
 
-    console.print(f"\nMA Crossover Alpha: [{'green' if alpha_ma > 0 else 'red'}]{alpha_ma:+.1f}%[/{'green' if alpha_ma > 0 else 'red'}]")
-    console.print(f"RSI Strategy Alpha:  [{'green' if alpha_rsi > 0 else 'red'}]{alpha_rsi:+.1f}%[/{'green' if alpha_rsi > 0 else 'red'}]")
+    console.print(f"\n[bold green]🏆 Best: {winner[0]}[/bold green]")
+    console.print(f"   {w['total_return_pct']:+.1f}% return | {w['cagr_pct']:+.1f}% CAGR | "
+                  f"Sharpe {w['sharpe_ratio']:.2f} | DD {w['max_drawdown_pct']:.1f}%")
 
-    console.print("\n[yellow]Note: These use simple rule-based signals. The LLM agents should produce better signals.[/yellow]")
-    console.print("[yellow]Run 'python scripts/run_analysis.py TICKER' to see LLM-powered analysis.[/yellow]")
+    if w["total_return_pct"] > nifty_ret:
+        diff = w["total_return_pct"] - nifty_ret
+        console.print(f"   ✅ Beats Nifty 50 by [green]+{diff:.1f}%[/green]")
+    else:
+        diff = nifty_ret - w["total_return_pct"]
+        console.print(f"   ❌ Trails Nifty 50 by [red]{diff:.1f}%[/red]")
+
+    # 2nd best for comparison
+    if len(ranked) > 1:
+        r2 = ranked[1][1]
+        console.print(f"\n[bold]🥈 Runner-up: {ranked[1][0]}[/bold]")
+        console.print(f"   {r2['total_return_pct']:+.1f}% return | {r2['cagr_pct']:+.1f}% CAGR")
+        if r2["total_return_pct"] > nifty_ret:
+            console.print(f"   ✅ Also beats Nifty 50!")
 
 
 if __name__ == "__main__":
