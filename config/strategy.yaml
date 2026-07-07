@@ -1,0 +1,59 @@
+# Strategy & Trading Rules Configuration
+
+risk_profiles:
+  conservative:
+    max_position_pct: 5          # Max 5% of portfolio in one stock
+    max_sector_pct: 20           # Max 20% in one sector
+    stop_loss_pct: 3             # Exit at -3%
+    max_drawdown_limit: 10       # System halt if drawdown > 10%
+    min_market_cap_cr: 50000     # Only stocks > ₹50,000 Cr market cap
+    min_confidence: 70           # Only trade if LLM confidence > 70%
+
+  moderate:
+    max_position_pct: 10
+    max_sector_pct: 30
+    stop_loss_pct: 5
+    max_drawdown_limit: 20
+    min_market_cap_cr: 10000     # ₹10,000 Cr minimum
+    min_confidence: 60
+
+  aggressive:
+    max_position_pct: 15
+    max_sector_pct: 40
+    stop_loss_pct: 8
+    max_drawdown_limit: 30
+    min_market_cap_cr: 1000      # ₹1,000 Cr minimum (mid-caps)
+    min_confidence: 50
+
+trading_rules:
+  # When to BUY
+  buy_conditions:
+    - "recommendation in ['STRONG_BUY', 'BUY']"
+    - "risk_level in ['LOW', 'MEDIUM']"
+    - "confidence >= risk_profile.min_confidence"
+
+  # When to SELL  
+  sell_conditions:
+    - "recommendation in ['STRONG_SELL', 'SELL']"
+    - "stop_loss triggered"
+    - "position exceeds max_position_pct after gains"
+
+  # Position sizing
+  sizing:
+    method: kelly_criterion      # or fixed_fraction
+    kelly_fraction: 0.25         # Use 25% of full Kelly for safety
+
+  # Rebalancing
+  rebalancing:
+    frequency_days: 2            # Check every 2 days
+    min_trade_amount: 5000       # Don't trade < ₹5,000
+
+broker:
+  brokerage_pct: 0.03            # Zerodha delivery: 0.03% or ₹20
+  stt_pct: 0.1                   # Securities Transaction Tax
+  stamp_duty_pct: 0.015          # Stamp duty
+  
+backtest:
+  years: 5
+  initial_capital: 1000000
+  benchmark: NIFTY50

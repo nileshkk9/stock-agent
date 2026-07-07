@@ -1,0 +1,62 @@
+# Stock universe configuration
+# Add/remove stocks as needed. Tickers must be NSE symbols.
+
+nifty50:
+  - RELIANCE
+  - TCS
+  - HDFCBANK
+  - INFY
+  - HINDUNILVR
+  - ICICIBANK
+  - KOTAKBANK
+  - BHARTIARTL
+  - ITC
+  - SBIN
+  - BAJFINANCE
+  - LT
+  - AXISBANK
+  - ASIANPAINT
+  - MARUTI
+  - SUNPHARMA
+  - TITAN
+  - WIPRO
+  - HCLTECH
+  - ULTRACEMCO
+  - NTPC
+  - POWERGRID
+  - ADANIPORTS
+  - ADANIENT
+  - NESTLEIND
+  - BAJAJFINSV
+  - M&M
+  - TATAMOTORS
+  - TECHM
+  - JSWSTEEL
+  - TATASTEEL
+  - GRASIM
+  - BRITANNIA
+  - CIPLA
+  - DRREDDY
+  - APOLLOHOSP
+  - COALINDIA
+  - ONGC
+  - SBILIFE
+  - HDFCLIFE
+  - EICHERMOT
+  - DIVISLAB
+  - HEROMOTOCO
+  - BPCL
+  - HINDALCO
+  - TATACONSUM
+  - BAJAJ-AUTO
+  - BEL
+  - INDUSINDBK
+  - TRENT
+
+# Add your custom watchlist here
+watchlist:
+  - ZOMATO
+  - NYKAA
+  - POLICYBZR
+  - PAYTM
+  # Add more tickers below
