@@ -20,7 +20,7 @@ class LLMConfig(BaseModel):
     api_key: str = Field(default_factory=lambda: os.getenv("LLM_API_KEY", ""))
     base_url: str | None = Field(default_factory=lambda: os.getenv("LLM_BASE_URL"))
     temperature: float = 0.3
-    max_tokens: int = 4096
+    max_tokens: int = 8192
 
 
 class KiteConfig(BaseModel):
@@ -29,6 +29,15 @@ class KiteConfig(BaseModel):
     user_id: str = Field(default_factory=lambda: os.getenv("KITE_USER_ID", ""))
     password: str = Field(default_factory=lambda: os.getenv("KITE_PASSWORD", ""))
     totp_secret: str = Field(default_factory=lambda: os.getenv("KITE_TOTP_SECRET", ""))
+
+
+class DhanConfig(BaseModel):
+    client_id: str = Field(default_factory=lambda: os.getenv("DHAN_CLIENT_ID", ""))
+    access_token: str = Field(default_factory=lambda: os.getenv("DHAN_ACCESS_TOKEN", ""))
+
+
+class TwelveDataConfig(BaseModel):
+    api_key: str = Field(default_factory=lambda: os.getenv("TWELVEDATA_API_KEY", ""))
 
 
 class TelegramConfig(BaseModel):
@@ -77,6 +86,8 @@ class AnalysisConfig(BaseModel):
 class AppConfig(BaseModel):
     llm: LLMConfig = LLMConfig()
     kite: KiteConfig = KiteConfig()
+    dhan: DhanConfig = DhanConfig()
+    twelvedata: TwelveDataConfig = TwelveDataConfig()
     telegram: TelegramConfig = TelegramConfig()
     paper_trading: PaperTradingConfig = PaperTradingConfig()
     analysis: AnalysisConfig = AnalysisConfig()

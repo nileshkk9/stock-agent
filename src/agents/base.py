@@ -69,8 +69,10 @@ class LLMAgent(ABC):
         messages.append({"role": "user", "content": user_message})
         return messages
 
-    async def _call_llm(self, user_message: str) -> str:
-        """Call the LLM API and return response text."""
+    async def _call_llm(self, user_message: str, max_retries: int = 3) -> str:
+        """Call the LLM API with retry logic and return response text."""
+        import asyncio
+
         url = self._get_api_url()
         headers = self._get_headers()
         messages = self._build_messages(user_message)
@@ -82,10 +84,22 @@ class LLMAgent(ABC):
             "max_tokens": self.max_tokens,
         }
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            data = response.json()
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    response = await client.post(url, headers=headers, json=payload)
+                    response.raise_for_status()
+                    data = response.json()
+                    break
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    wait = 2 ** attempt
+                    logger.warning(f"LLM call failed (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {wait}s...")
+                    await asyncio.sleep(wait)
+                else:
+                    raise last_error
 
         if self.provider == "anthropic":
             return data["content"][0]["text"]
@@ -117,7 +131,7 @@ class LLMAgent(ABC):
             return asyncio.run(self._call_llm(user_message))
 
     def _parse_json_response(self, response: str) -> dict:
-        """Extract JSON from LLM response that may contain markdown."""
+        """Extract JSON from LLM response that may contain markdown or reasoning text."""
         # Try parsing raw response first
         try:
             return json.loads(response)
@@ -133,11 +147,26 @@ class LLMAgent(ABC):
             except json.JSONDecodeError:
                 pass
 
-        # Try finding JSON object in text
-        match = re.search(r"\{[\s\S]*\}", response)
-        if match:
+        # Find the LAST complete JSON object (handles reasoning text before JSON)
+        # This is common with reasoning models that output thinking before the JSON
+        braces = [i for i, c in enumerate(response) if c == "{"]
+        if braces:
+            # Try from the last opening brace
+            for start in reversed(braces):
+                candidate = response[start:]
+                try:
+                    obj = json.loads(candidate)
+                    if isinstance(obj, dict) and len(obj) > 0:
+                        return obj
+                except json.JSONDecodeError:
+                    continue
+
+            # Also try from the first opening brace
+            candidate = response[braces[0]:]
             try:
-                return json.loads(match.group(0))
+                obj = json.loads(candidate)
+                if isinstance(obj, dict) and len(obj) > 0:
+                    return obj
             except json.JSONDecodeError:
                 pass
 
